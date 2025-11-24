@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tendar-api-deployment
+  labels:
+    app: tendar-api
+    environment: staging 
+spec:
+  replicas: 3 # Start with 3 replicas for high availability (multi-AZ)
+  selector:
+    matchLabels:
+      app: tendar-api
+  template:
+    metadata:
+      labels:
+        app: tendar-api
+    spec:
+      serviceAccountName: tendar-api-sa # For RBAC (Role-Based Access Control)
+      containers:
+      - name: tendar-api
+        image: 996502030188.dkr.ecr.us-west-1.amazonaws.com/tendar-api:latest 
+        ports:
+        - containerPort: 8000
+        
+        # Resource Limits and Requests (Crucial for EKS stability and cost)
+        resources:
+          limits:
+            cpu: "500m"  # Max CPU allowed (0.5 vCPU)
+            memory: "512Mi" # Max Memory allowed
+          requests:
+            cpu: "250m"  # Guaranteed minimum CPU allocation
+            memory: "256Mi" # Guaranteed minimum Memory allocation
+        
+        # Health Checks (For reliable deployments and self-healing)
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          
+        # Environment Variables (for configuration)
+        env:
+        - name: DATABASE_HOST
+          valueFrom:
+            secretKeyRef:
+              name: tendar-db-credentials # Fetched securely from AWS Secrets Manager/Vault
+              key: host

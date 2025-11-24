@@ -1,0 +1,61 @@
+name: CI/CD Pipeline - Tendar API
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'app/**'
+
+env:
+  AWS_REGION: us-west-1
+  ECR_REPOSITORY: tendar-api
+  K8S_MANIFEST_PATH: k8s/overlays/staging/deployment.yaml 
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # Required for OIDC/IRSA to authenticate with AWS
+      contents: write # Required to push tag updates back to Git
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 1. AWS Authentication (OIDC/IRSA - Critical for Security)
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-oidc-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 2. Login to ECR
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # 3. Build, Tag, and Push Docker Image (CI)
+      - name: Build and push Docker image
+        id: build-image
+        env:
+          IMAGE_TAG: ${{ github.sha }} # Use Git SHA as the unique, immutable tag
+        run: |
+          # Build the image using the Dockerfile defined previously
+          docker build -t ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} .
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          echo "image_uri=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}" >> $GITHUB_OUTPUT
+
+      # 4. GitOps: Update Kubernetes Manifest (CD Trigger)
+      - name: Update deployment manifest for Argo CD
+        run: |
+          # Replace the old image tag in the deployment file with the new immutable tag (GitOps)
+          # This command assumes the image tag is defined under the 'image:' field in the YAML
+          # Using sed is a common way to achieve this update in CI/CD workflows
+          sed -i "s|image:.*|image: ${{ steps.build-image.outputs.image_uri }}|g" ${{ env.K8S_MANIFEST_PATH }}
+          
+          # Optional: Add tag for Argo CD tracking
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -a -m "GitOps: Automated deployment trigger for ${{ env.ECR_REPOSITORY }}. New tag: ${{ env.IMAGE_TAG }}"
+          git push
